@@ -84,6 +84,9 @@
             "name": "[variables('functionAppName')]",
             "apiVersion": "[providers('Microsoft.Web', 'sites').apiVersions[0]]",
             "location": "[resourceGroup().location]",
+            "identity": {
+                "type": "SystemAssigned"
+            },
             "properties": {
                 "serverFarmId": "[variables('appServicePlanName')]",
                 "siteConfig": {
