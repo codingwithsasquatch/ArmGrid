@@ -3,6 +3,8 @@ using System.IO;
 using System.Text;
 using System.Net;
 using System.Net.Http;
+using System.Linq;
+using System.Collections.Generic;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
@@ -22,20 +24,30 @@ namespace ArmGrid
 {
 	public static class ArmEventTrigger
 	{
-
 		private static readonly HttpClient HttpClient = new HttpClient();
-		//TODO: ad app settings reference
-		private static readonly string EventGridEndpoint = ConfigurationManager.AppSettings["EventGridCustomTopicEndpoint"];
-
+		private static readonly string EventGridEndpoint = Environment.GetEnvironmentVariable("EventGridCustomTopicEndpoint");
+		
 		[FunctionName("ArmEventTrigger")]
 		public static async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)] HttpRequestMessage req, TraceWriter log)
 		{
 			string requestContent = await req.Content.ReadAsStringAsync();
 
-			//TODO: lookup response code for event grid to get EG to resubmit it since it failed delivery
+			//validate subscription if this is a validation request
+			//IEnumerable<string> headerValues;
+			if (req.Headers.TryGetValues("Aeg-Event-Type", out IEnumerable<string> headerValues))
+			{
+				string validationHeaderValue = headerValues.FirstOrDefault<string>();
+				if(validationHeaderValue == "SubscriptionValidation")
+				{
+					EventGridEvent[] events = JsonConvert.DeserializeObject<EventGridEvent[]>(requestContent);
+					JObject dataObject = events.FirstOrDefault().Data as JObject;
+					return new OkObjectResult(new { validationResponse = dataObject["validationCode"] });
+				}
+			}
+
 			return await ReRaiseEventGridEvent(requestContent, log)
-				? (ActionResult)new OkObjectResult("")
-				: new BadRequestObjectResult("It's busted");
+				? (ActionResult)new OkResult()
+				: new StatusCodeResult(500);
 		}
 
 		private static async Task<bool> ReRaiseEventGridEvent(string originalEvent, TraceWriter log)
@@ -44,31 +56,19 @@ namespace ArmGrid
 
 			foreach (EventGridEvent eventGridEvent in eventGridEvents)
 			{
-
+				var newEvent = eventGridEvent;
 				JObject dataObject = eventGridEvent.Data as JObject;
 
 				if (eventGridEvent.EventType == "Microsoft.Resources.ResourceWriteSuccess")
 				{
-					
 					string subscriptionId = (string)dataObject["subscriptionId"];
 					string resourceUri = (string)dataObject["resourceUri"];
 					log.Info(subscriptionId);
 					var resourceState = await GetArmResourceState(subscriptionId, resourceUri, log);
 					
-					//append armData to the end of the Data object
 					dataObject.Add("ResourceState", resourceState);
+					newEvent.Data = dataObject;
 				}
-
-				var newEvent = new EventGridEvent()
-				{
-					Topic = eventGridEvent.Topic,
-					Subject = eventGridEvent.Subject,
-					EventType = eventGridEvent.EventType,
-					EventTime = eventGridEvent.EventTime,
-					Id = eventGridEvent.Id,
-					DataVersion = eventGridEvent.DataVersion,
-					Data = dataObject
-				};
 
 				HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, EventGridEndpoint)
 				{
@@ -78,34 +78,29 @@ namespace ArmGrid
 				HttpResponseMessage response = await HttpClient.SendAsync(request);
 				if (!response.IsSuccessStatusCode)
 				{
-					throw new Exception($"Exception HTTP Response {response.StatusCode}");
+					return false;
+					//throw new Exception($"Exception HTTP Response {response.StatusCode}");
 				}
 			}
-			//TODO: return true if we are good return false if we want event grid the the resubmit
 			return true;
 		}
 
-
 		private static async Task<string> GetArmResourceState(string subscriptionId, string resourceId, TraceWriter log)
 		{
-
 			var azureServiceTokenProvider = new AzureServiceTokenProvider();
 
 			try
 			{
 				var serviceCreds = new TokenCredentials(await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/").ConfigureAwait(false));
-
-				var resourceManagementClient =
-					new ResourceManagementClient(serviceCreds) { SubscriptionId = subscriptionId };
+				var resourceManagementClient = new ResourceManagementClient(serviceCreds) { SubscriptionId = subscriptionId };
 
 				var resourceState = await resourceManagementClient.Resources.GetByIdAsync(resourceId, "2017-12-01");
-				var properties = resourceState.Properties.ToString()
-					.Replace(Environment.NewLine, String.Empty)
-					.Replace("\\", String.Empty).Replace(" ", String.Empty);
+				var properties = resourceState.Properties.ToString();
+				//	.Replace(Environment.NewLine, String.Empty)
+				//	.Replace("\\", String.Empty).Replace(" ", String.Empty);
 
 				log.Info(properties);
 				return properties;
-
 			}
 			catch (Exception exp)
 			{
@@ -113,8 +108,6 @@ namespace ArmGrid
 				log.Info(message);
 				return message;
 			}
-		
-			
 		}
 	}
 }
