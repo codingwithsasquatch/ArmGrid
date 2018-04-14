@@ -33,7 +33,6 @@ namespace ArmGrid
 			string requestContent = await req.Content.ReadAsStringAsync();
 
 			//validate subscription if this is a validation request
-			//IEnumerable<string> headerValues;
 			if (req.Headers.TryGetValues("Aeg-Event-Type", out IEnumerable<string> headerValues))
 			{
 				string validationHeaderValue = headerValues.FirstOrDefault<string>();
@@ -94,7 +93,7 @@ namespace ArmGrid
 				var serviceCreds = new TokenCredentials(await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/").ConfigureAwait(false));
 				var resourceManagementClient = new ResourceManagementClient(serviceCreds) { SubscriptionId = subscriptionId };
 
-				var resourceState = await resourceManagementClient.Resources.GetByIdAsync(resourceId, "2017-12-01");
+				var resourceState = await resourceManagementClient.Resources.GetByIdAsync(resourceId, "2017-05-10");
 				var properties = resourceState.Properties.ToString();
 				//	.Replace(Environment.NewLine, String.Empty)
 				//	.Replace("\\", String.Empty).Replace(" ", String.Empty);
