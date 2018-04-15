@@ -92,8 +92,7 @@ namespace ArmGrid
 			{
 				var serviceCreds = new TokenCredentials(await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/").ConfigureAwait(false));
 				var resourceManagementClient = new ResourceManagementClient(serviceCreds) { SubscriptionId = subscriptionId };
-
-				var resourceState = await resourceManagementClient.Resources.GetByIdAsync(resourceId, "2017-05-10");
+				var resourceState = resourceManagementClient.Resources.GetById(resourceId, "2017-05-10");
 				var properties = resourceState.Properties.ToString();
 				//	.Replace(Environment.NewLine, String.Empty)
 				//	.Replace("\\", String.Empty).Replace(" ", String.Empty);
