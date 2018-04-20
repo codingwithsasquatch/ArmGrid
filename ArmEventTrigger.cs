@@ -1,7 +1,5 @@
 using System;
-using System.IO;
 using System.Text;
-using System.Net;
 using System.Net.Http;
 using System.Linq;
 using System.Collections.Generic;
@@ -18,7 +16,6 @@ using Microsoft.Azure.Services.AppAuthentication;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Microsoft.Rest;
-using System.Configuration;
 
 namespace ArmGrid
 {
@@ -26,6 +23,8 @@ namespace ArmGrid
 	{
 		private static readonly HttpClient HttpClient = new HttpClient();
 		private static readonly string EventGridEndpoint = Environment.GetEnvironmentVariable("EventGridCustomTopicEndpoint");
+
+		private static List<Provider> ResourceProviders;
 		
 		[FunctionName("ArmEventTrigger")]
 		public static async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)] HttpRequestMessage req, TraceWriter log)
@@ -60,12 +59,14 @@ namespace ArmGrid
 
 				if (eventGridEvent.EventType == "Microsoft.Resources.ResourceWriteSuccess")
 				{
-					string subscriptionId = (string)dataObject["subscriptionId"];
-					string resourceUri = (string)dataObject["resourceUri"];
-					log.Info(subscriptionId);
-					var resourceState = await GetArmResourceState(subscriptionId, resourceUri, log);
+					string subscriptionId = (string) dataObject["subscriptionId"];
+					string resourceUri = (string) dataObject["resourceUri"];
 					
-					dataObject.Add("ResourceState", resourceState);
+					string resourceProvider = (string) dataObject["resourceProvider"];
+					log.Info(subscriptionId);
+					var resourceState = await GetArmResourceState(subscriptionId, resourceProvider, resourceUri, log);
+					
+					dataObject.Add("ResourceState", JObject.Parse(resourceState));
 					newEvent.Data = dataObject;
 				}
 
@@ -84,7 +85,7 @@ namespace ArmGrid
 			return true;
 		}
 
-		private static async Task<string> GetArmResourceState(string subscriptionId, string resourceId, TraceWriter log)
+		private static async Task<string> GetArmResourceState(string subscriptionId, string resourceProvider, string resourceId, TraceWriter log)
 		{
 			var azureServiceTokenProvider = new AzureServiceTokenProvider();
 
@@ -92,7 +93,19 @@ namespace ArmGrid
 			{
 				var serviceCreds = new TokenCredentials(await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/").ConfigureAwait(false));
 				var resourceManagementClient = new ResourceManagementClient(serviceCreds) { SubscriptionId = subscriptionId };
-				var resourceState = resourceManagementClient.Resources.GetById(resourceId, "2017-05-10");
+
+				if (ResourceProviders != null) {
+					ResourceProviders = (List<Provider>) await resourceManagementClient.Providers.ListAsync();
+				}
+
+				var resource = new Resource(resourceId);
+				var apiVersion = ResourceProviders
+					.Where( o => o.NamespaceProperty == resourceProvider)
+					.Select( m => m.ResourceTypes)
+					.First()
+					.Where( p => p.ResourceType == resource.Type )
+					.First().ApiVersions[0];
+				var resourceState = resourceManagementClient.Resources.GetById(resourceId, apiVersion);
 				var properties = resourceState.Properties.ToString();
 				//	.Replace(Environment.NewLine, String.Empty)
 				//	.Replace("\\", String.Empty).Replace(" ", String.Empty);
@@ -105,6 +118,46 @@ namespace ArmGrid
 				var message = $"Something went wrong: {exp.Message}";
 				log.Info(message);
 				return message;
+			}
+		}
+	}
+
+	public class Resource
+	{
+		public Resource(string resourceId)
+		{
+			Id = resourceId;
+		}
+		public string Id
+		{
+			get { return Id; }
+			set
+			{ 
+				Id = value;
+				ExtractResourceProps();
+			}
+		}
+		public string Subscription {get; private set;}
+		public string Provider {get; private set;}
+		public string Type {get; private set;}
+		public string Name {get; private set;}
+		public string ResourceGroup {get; private set;}
+
+		private void ExtractResourceProps()
+		{
+			Uri resourceUri = new Uri("https://management.azure.com"+Id);
+			Subscription = resourceUri.Segments[1];
+			ResourceGroup = resourceUri.Segments[3];
+			Provider = resourceUri.Segments[5];
+			
+			if (resourceUri.Segments.Length>6)
+			{
+				string resourceType = resourceUri.Segments[6];
+				for (int i=8; i<resourceUri.Segments.Length; i+=2)
+				{
+					resourceType += resourceUri.Segments[i];
+				}
+				Type = resourceType;
 			}
 		}
 	}
